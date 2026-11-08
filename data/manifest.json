@@ -1,0 +1,8 @@
+{
+  "counts": {
+    "train_episodes": 24000,
+    "valid_episodes": 5000
+  },
+  "description": "Dataset metadata for the candidate-facing HVAC follow-up policy optimization take-home.",
+  "seed": 20260621
+}

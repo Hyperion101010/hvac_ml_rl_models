@@ -1,0 +1,23 @@
+{
+  "values": {
+    "sold_estimate": 117.23592730255255,
+    "booked_appointment": 33.63239434731457,
+    "membership_converted": 18.087648435361217,
+    "positive_review": 9.800738007380074,
+    "opted_out": -62.57016348773842,
+    "parked": -5.46123727486296
+  },
+  "escalate_unhappy": 21.09183402962963,
+  "escalate_other": -18.562515248670998,
+  "outcome_classes": [
+    "continue",
+    "max_steps",
+    "sold_estimate",
+    "booked_appointment",
+    "membership_converted",
+    "positive_review",
+    "opted_out",
+    "escalated",
+    "parked"
+  ]
+}

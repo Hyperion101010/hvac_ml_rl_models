@@ -1,0 +1,77 @@
+{
+  "vocabs": {
+    "topic": [
+      "aging_equipment",
+      "competitor_quote",
+      "install_warranty",
+      "maintenance_checkin",
+      "membership_renewal",
+      "open_estimate",
+      "plan_visit",
+      "repair_vs_replace",
+      "service_issue",
+      "weather_tip"
+    ],
+    "equipment_type": [
+      "air_quality",
+      "boiler",
+      "central_ac",
+      "furnace",
+      "heat_pump",
+      "mini_split",
+      "thermostat"
+    ],
+    "season": [
+      "fall",
+      "spring",
+      "summer",
+      "winter"
+    ],
+    "track_hint": [
+      "deal",
+      "nurture",
+      "relationship"
+    ],
+    "heat": [
+      "cold",
+      "hot",
+      "warm"
+    ],
+    "estimate_value_bucket": [
+      "high",
+      "low",
+      "medium",
+      "none"
+    ],
+    "membership_status": [
+      "active",
+      "expiring",
+      "lapsed",
+      "none"
+    ],
+    "customer_signal": [
+      "ask_spouse",
+      "competitor",
+      "none",
+      "positive",
+      "price_objection",
+      "timing_delay",
+      "unhappy"
+    ],
+    "weather_extreme": [
+      "False",
+      "True"
+    ],
+    "action": [
+      "<PAD>",
+      "WAIT",
+      "CHECK_IN",
+      "ESTIMATE_NUDGE",
+      "ASK_OBJECTION",
+      "OFFER_SCHEDULING",
+      "MEMBERSHIP_TOUCH",
+      "PARK_THREAD",
+      "ESCALATE_TO_HUMAN"
+    ]
+  }
+}
