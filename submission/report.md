@@ -2,10 +2,9 @@
 
 ## Summary
 
-The policy has two fixed rules that always run first. If the customer is unhappy or the service-risk
-score is high, the case goes to a person. If the customer has ignored two of our messages, we stop
-messaging them. For everything else, a trained model picks the action. If the model can't run, or
-sees something it was never trained on, a simple hand-written rule takes over so the policy always
+The policy has one fixed rule that always runs first: if the customer is unhappy or the
+service-risk score is high, the case goes to a person. For everything else, a trained model picks
+the action. If the model can't run, a simple hand-written rule takes over so the policy always
 gives a valid answer.
 
 I didn't have a simulator, so I estimated how well it does by replaying the old system's logs. By
@@ -15,17 +14,18 @@ system did turned out to be no better than the hand-written rules, and often wor
 
 Three caveats matter, and I explain them in section 3. I didn't set aside a separate test set, I
 picked the final model version using the same validation data I report on, and I couldn't show that
-planning more than one step ahead helps.
+planning more than one step ahead helps. A fourth, smaller one: the figures come from an earlier
+run, on an earlier version of the policy code (see the note under section 1).
 
 ## 1. When each action is used
 
-The two fixed rules come first. Everything else is the model's call. The table compares how often
-the old system used each action with how often my policy uses it on the validation data.
+The escalation rule comes first. Everything else is the model's call. The table compares how often
+the old system used each action with how often my policy used it on the validation data.
 
 | Action | Old system | My policy | When it gets used |
 | --- | ---: | ---: | --- |
 | Escalate to human | 2.4% | 4.3% | Unhappy or high-risk customers (fixed rule). The old system missed most of these and escalated plenty of customers who didn't need it. |
-| Park thread | 1.7% | 16.8% | After two ignored messages (fixed rule), and often for relationship-type customers. |
+| Park thread | 1.7% | 16.8% | Often for relationship-type customers and for customers who have ignored our messages. |
 | Wait | 6.9% | 47.3% | The most common choice, especially for relationship-type customers and for expiring or lapsed memberships. |
 | Offer scheduling | 13.8% | 15.0% | When a customer raises a price, competitor, spouse or timing concern about an open estimate, it often moves toward booking. |
 | Ask about the objection | 21.1% | 12.8% | Used less than the old system did. In the logs, offering scheduling did much better than asking. |
@@ -34,9 +34,13 @@ the old system used each action with how often my policy uses it on the validati
 | Check in | 17.9% | 0.0% | Never. In the logs it led to nearly as many opt-outs as positive reviews. |
 
 In plain terms, this is a quiet policy. It waits or parks about two thirds of the time, which is a
-lot, and I come back to that in section 6. Note that the log comparisons here are descriptive only.
-The old system picked actions for reasons the logs only partly show, so they don't prove that one
-action causes better results than another.
+lot, and I come back to that in section 6.
+
+*Note on these shares.* I measured them on an earlier version of the policy code, which may also have
+included a rule to park customers after two ignored messages. The submitted file does not have that
+rule, so the Park and Wait shares for the submitted file could differ somewhat. The other rows should
+be close. The log comparisons are descriptive only: the old system picked actions for reasons the
+logs only partly show, so they don't prove that one action causes better results than another.
 
 ## 2. What I compared against
 
@@ -124,8 +128,10 @@ escalation rule does about equally well, and "always check in" does badly.
 - *Clean numbers.* I picked each multi-step model's best training round using this same validation
   data, which flatters their scores, and I have no separate test set. The second opinion is less
   affected by this.
-- *Anything about customers who keep ignoring us.* The logs support parking them, since parking did
-  much better than nudging, but I couldn't measure it directly.
+- *Anything about customers who keep ignoring us.* The logs suggest parking them is better than
+  nudging them, but I couldn't measure it directly for the trained policies.
+- *The exact submitted file.* The numbers come from an earlier version of the policy code (see the
+  note under section 1). I didn't re-run the evaluation on the final file.
 
 I also didn't test removing the "days since last contact" fields, or using a stricter filter (0.05
 instead of 0.01) on which actions the model may consider. I make no claims about either.
@@ -166,11 +172,13 @@ evidence, not as facts.
 
 ## 6. Three most likely failure modes
 
-1. **It's too quiet.** It waits almost half the time, parks far more than the old system did, and
-   never checks in. The logs reward this because waiting rarely causes an opt-out. But if the real
-   environment penalizes silence, or a parked customer is worth more than my short window shows, it
-   will underperform. It can also go wrong where the old system rarely tried an action. I'd watch
-   the action mix and the share of wait and park.
+1. **It's too quiet.** On the version I measured, it waited almost half the time, parked far more
+   than the old system did, and never checked in. The logs reward this because waiting rarely
+   causes an opt-out. But if the real environment penalizes silence, or a parked customer is worth
+   more than my short window shows, it will underperform. It can also go wrong where the old system
+   rarely tried an action. Because the submitted file has no fixed rule for customers who keep
+   ignoring us, that case is left to the model (or to the backup rule, which parks them after two
+   ignored messages), so I'd watch the action mix and the share of wait and park.
 2. **Noisy scores push it into the wrong tone.** If the relationship or risk scores are off, it
    could push sales at a relationship customer (in the logs, opt-outs after a sales message grew
    with each step and were higher for high-relationship customers), park too early, or miss an
@@ -182,9 +190,9 @@ evidence, not as facts.
 ## 7. If this ran on 5% of real traffic
 
 **Rollout.** I'd start in the background, without sending anything, and compare its choices with
-the live system. Then I'd move 5% of low-risk traffic onto it with the safety rules on, and leave
-the rest on the old system as the comparison group. I'd stay at 5% until there is enough data on
-the measures below.
+the live system. Then I'd move 5% of low-risk traffic onto it with the escalation rule on, and
+leave the rest on the old system as the comparison group. I'd stay at 5% until there is enough data
+on the measures below.
 
 **Reference rates.** In the training logs, about one in four conversations ends in an opt-out,
 about 8% end in a booked appointment and 5.5% in a sale.
@@ -207,6 +215,11 @@ randomization, cap how much traffic it touches, and record the probabilities use
 easier to analyze later.
 
 ## Reproducing the numbers
+
+The evaluation script and the extra models used for the comparisons (behavior cloning,
+advantage-weighted cloning, the one-step model and the second-opinion model) are not part of this
+folder. They are kept in the project history on the `exp-changes` branch, at commit `9e28094`. From
+that commit, the figures come from:
 
 ```bash
 python3 -m eval.run_ope --q-ckpt models/transformer_fqe.pt --policies product_rule,simple_rule,always_check_in,always_estimate_nudge,always_escalate,transformer_bc,transformer_awbc,transformer_fqi,transformer_fqi_acq,one_step_greedy
