@@ -9,11 +9,13 @@ import torch
 
 from policies.base import ACTIONS
 from policies.features import FeatureSchema, build_sequence, collate_sequences
-from policies.safety import hard_safety_action, should_escalate, should_park
+from policies.outcome_values import OutcomeValues, compute_outcome_values
 from policies.transformer_model import (
     CausalTransformerPolicyNet,
     bc_support_mask,
+    factored_scores,
     masked_argmax,
+    should_escalate,
 )
 from policies.transformer_policy import transformer_fqi_act, transformer_bc_act, load_bundle
 
@@ -57,18 +59,6 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(tuple(out["q_values"].shape), (1, 8))
         self.assertEqual(tuple(out["bc_logits"].shape), (1, 8))
 
-    def test_action_conditioned_q_shapes(self):
-        schema = FeatureSchema()
-        model = CausalTransformerPolicyNet(
-            schema, d_model=64, n_heads=4, n_layers=2, action_conditioned_q=True
-        )
-        self.assertTrue(model.action_conditioned_q)
-        steps, valid = build_sequence(_obs(), [])
-        batch = collate_sequences([(steps, valid)])
-        out = model(batch["cats"], batch["nums"], batch["actions"], batch["mask"])
-        self.assertEqual(tuple(out["q_values"].shape), (1, 8))
-        self.assertEqual(tuple(out["bc_logits"].shape), (1, 8))
-
     def test_bc_support_and_argmax(self):
         logits = torch.tensor([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         support = bc_support_mask(logits, threshold=0.05)
@@ -81,18 +71,54 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(should_escalate(_obs(customer_signal="unhappy")))
         self.assertTrue(should_escalate(_obs(service_risk_score=0.9)))
         self.assertFalse(should_escalate(_obs(ignored_count=2, service_risk_score=0.1)))
-        self.assertTrue(should_park(_obs(ignored_count=2)))
-        self.assertEqual(hard_safety_action(_obs(ignored_count=2)), "PARK_THREAD")
-        self.assertEqual(
-            hard_safety_action(_obs(customer_signal="unhappy", ignored_count=2)),
-            "ESCALATE_TO_HUMAN",
-        )
 
-    def test_bc_support_force_park(self):
-        logits = torch.full((1, 8), -5.0)
-        logits[0, 0] = 5.0
-        support = bc_support_mask(logits, threshold=0.01, force_action_idx=6)
-        self.assertTrue(bool(support[0, 6].item()))
+    def test_factored_scores_shape(self):
+        ov = OutcomeValues(
+            values={
+                "sold_estimate": 100.0,
+                "booked_appointment": 30.0,
+                "membership_converted": 18.0,
+                "positive_review": 10.0,
+                "opted_out": -60.0,
+                "parked": -5.0,
+            },
+            escalate_unhappy=20.0,
+            escalate_other=-18.0,
+        )
+        logits = torch.zeros(2, 8, 9)
+        q = torch.zeros(2, 8)
+        unhappy = torch.tensor([False, True])
+        scores = factored_scores(logits, q, ov, unhappy)
+        self.assertEqual(tuple(scores.shape), (2, 8))
+
+    def test_factored_scores_reward_scale_on_q_only(self):
+        ov = OutcomeValues(
+            values={
+                "sold_estimate": 0.0,
+                "booked_appointment": 0.0,
+                "membership_converted": 0.0,
+                "positive_review": 0.0,
+                "opted_out": 0.0,
+                "parked": 0.0,
+            },
+            escalate_unhappy=0.0,
+            escalate_other=0.0,
+        )
+        # Uniform over outcomes except put all mass on continue for action 0 via huge logit
+        from policies.outcome_values import CONTINUE_IDX
+
+        logits = torch.full((1, 8, 9), -20.0)
+        logits[0, :, CONTINUE_IDX] = 20.0
+        q = torch.ones(1, 8)
+        unhappy = torch.tensor([False])
+        s1 = factored_scores(logits, q, ov, unhappy, reward_scale=1.0)
+        s100 = factored_scores(logits, q, ov, unhappy, reward_scale=100.0)
+        # V_imm ~ 0; P(continue)~1 => score ~= Q * scale
+        self.assertTrue(torch.allclose(s1, torch.ones(1, 8), atol=1e-3))
+        self.assertTrue(torch.allclose(s100, torch.full((1, 8), 100.0), atol=1e-2))
+        q2 = torch.full((1, 8), 2.0)
+        s200 = factored_scores(logits, q2, ov, unhappy, reward_scale=100.0)
+        self.assertTrue(torch.allclose(s200, 2.0 * s100, atol=1e-2))
 
 
 @unittest.skipUnless(

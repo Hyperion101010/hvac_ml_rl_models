@@ -1,4 +1,4 @@
-"""Self-contained HVAC follow-up act() policy (transformer FQI, action-conditioned Q)."""
+"""HVAC follow-up policy: hard escalate, then transformer FQI with BC support."""
 
 from __future__ import annotations
 
@@ -86,6 +86,7 @@ DEFAULT_VOCABS: Dict[str, List[str]] = {
     "action": [PAD_ACTION, *ACTIONS],
 }
 
+# Kept so the network matches the shipped checkpoint (outcome head unused at act time).
 OUTCOME_CLASSES = (
     "continue",
     "max_steps",
@@ -99,7 +100,6 @@ OUTCOME_CLASSES = (
 )
 
 RISK_ESCALATE = 0.75
-PARK_IGNORED_COUNT = 2
 RISK_SERVICE_ISSUE = 0.55
 REL_CARE = 0.60
 REL_TRACK_CARE = 0.50
@@ -123,6 +123,9 @@ MODEL_LOADED = False
 
 logger = logging.getLogger(__name__)
 
+StepEmbedding = None  # type: ignore
+CausalTransformerPolicyNet = None  # type: ignore
+
 
 def _stoid(vocab: List[str]) -> Dict[str, int]:
     return {v: i for i, v in enumerate(vocab)}
@@ -134,17 +137,11 @@ class FeatureSchema:
         self.cat_to_id = {k: _stoid(self.vocabs[k]) for k in CAT_FIELDS}
         self.cat_to_id["weather_extreme"] = _stoid(self.vocabs["weather_extreme"])
         self.action_to_id = _stoid(self.vocabs["action"])
-        self.unk_action = self.action_to_id.get(UNK, 0)
         self.pad_action_id = self.action_to_id[PAD_ACTION]
         self.n_actions = len(ACTIONS)
-        self.action_name_to_idx = {a: i for i, a in enumerate(ACTIONS)}
 
     def cat_id(self, field: str, value: Any) -> int:
-        key = str(value)
-        table = self.cat_to_id[field]
-        if key not in table:
-            return 0
-        return table[key]
+        return self.cat_to_id[field].get(str(value), 0)
 
     def action_id(self, action: Optional[str]) -> int:
         if action is None or action == PAD_ACTION:
@@ -243,8 +240,7 @@ def history_actions_match(
     filtered: Sequence[Dict[str, Any]], observation: Dict[str, Any]
 ) -> bool:
     prev = list(observation.get("previous_actions") or [])
-    got = [_item_action(h) for h in filtered]
-    got = [a for a in got if a]
+    got = [a for a in (_item_action(h) for h in filtered) if a]
     return got == prev
 
 
@@ -269,23 +265,23 @@ def build_sequence(
             syn = dict(observation)
             syn["turn"] = i
             syn["previous_actions"] = prev[: i + 1]
-            syn["last_action"] = action
             steps.append((syn, action))
         steps.append((observation, None))
 
     if len(steps) > MAX_LEN:
-        steps = steps[-(MAX_LEN):]
+        steps = steps[-MAX_LEN:]
 
     encoded = [schema.encode_step(obs, action) for obs, action in steps]
     valid = [True] * len(encoded)
     while len(encoded) < MAX_LEN:
-        pad = {
-            "cats": [0] * (len(CAT_FIELDS) + 1),
-            "nums": [0.0] * len(NUM_FIELDS),
-            "action_id": schema.pad_action_id,
-            "turn": 0,
-        }
-        encoded.append(pad)
+        encoded.append(
+            {
+                "cats": [0] * (len(CAT_FIELDS) + 1),
+                "nums": [0.0] * len(NUM_FIELDS),
+                "action_id": schema.pad_action_id,
+                "turn": 0,
+            }
+        )
         valid.append(False)
     return encoded, valid
 
@@ -301,22 +297,14 @@ def collate_sequences(
     cats = torch.zeros(b, MAX_LEN, n_cats, dtype=torch.long)
     nums = torch.zeros(b, MAX_LEN, n_nums, dtype=torch.float32)
     actions = torch.zeros(b, MAX_LEN, dtype=torch.long)
-    turns = torch.zeros(b, MAX_LEN, dtype=torch.long)
     mask = torch.zeros(b, MAX_LEN, dtype=torch.bool)
     for i, (steps, valid) in enumerate(batch):
         for t in range(MAX_LEN):
             cats[i, t] = torch.tensor(steps[t]["cats"], dtype=torch.long)
             nums[i, t] = torch.tensor(steps[t]["nums"], dtype=torch.float32)
             actions[i, t] = int(steps[t]["action_id"])
-            turns[i, t] = int(steps[t]["turn"])
             mask[i, t] = bool(valid[t])
-    return {
-        "cats": cats,
-        "nums": nums,
-        "actions": actions,
-        "turns": turns,
-        "mask": mask,
-    }
+    return {"cats": cats, "nums": nums, "actions": actions, "mask": mask}
 
 
 def should_escalate(observation: Dict[str, Any]) -> bool:
@@ -328,36 +316,7 @@ def should_escalate(observation: Dict[str, Any]) -> bool:
         return False
 
 
-def should_park(observation: Dict[str, Any]) -> bool:
-    try:
-        return int(observation.get("ignored_count", 0) or 0) >= PARK_IGNORED_COUNT
-    except (TypeError, ValueError):
-        return False
-
-
-def hard_safety_action(observation: Dict[str, Any]) -> Optional[str]:
-    if should_escalate(observation):
-        return "ESCALATE_TO_HUMAN"
-    if should_park(observation):
-        return "PARK_THREAD"
-    return None
-
-
-def _is_ood_observation(observation: Dict[str, Any], schema: FeatureSchema) -> bool:
-    for f in CAT_FIELDS:
-        raw = observation.get(f)
-        if raw is None:
-            continue
-        key = str(raw)
-        table = schema.cat_to_id.get(f, {})
-        if key not in table:
-            return True
-    return False
-
-
 def product_rule(observation: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
-    """README-aligned hand-coded policy. Extensible sibling to ML act() policies."""
-
     signal = observation["customer_signal"]
     risk = observation["service_risk_score"]
     ignored = observation["ignored_count"]
@@ -437,12 +396,7 @@ def product_rule(observation: Dict[str, Any], history: List[Dict[str, Any]]) -> 
     return "WAIT"
 
 
-StepEmbedding = None  # type: ignore
-CausalTransformerPolicyNet = None  # type: ignore
-
-
 def _ensure_module_bases() -> None:
-    """Build nn.Module subclasses on first torch import (lazy)."""
     import torch
     from torch import nn
 
@@ -476,8 +430,6 @@ def _ensure_module_bases() -> None:
             return self.norm(self.out(x))
 
     class _CausalTransformerPolicyNet(nn.Module):
-        """Causal Transformer with outcome, Q, and BC heads (outcome kept for ckpt)."""
-
         def __init__(
             self,
             schema: FeatureSchema,
@@ -503,6 +455,7 @@ def _ensure_module_bases() -> None:
                 activation="gelu",
             )
             self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+            # Unused at act/train loss time; present so shipped checkpoints load.
             self.outcome_head = nn.Sequential(
                 nn.Linear(d_model, d_model),
                 nn.GELU(),
@@ -547,41 +500,28 @@ def _ensure_module_bases() -> None:
                 torch.ones(length, length, device=cats.device, dtype=torch.bool),
                 diagonal=1,
             )
-            key_pad = ~mask
-            encoded = self.encoder(h, mask=causal, src_key_padding_mask=key_pad)
+            encoded = self.encoder(h, mask=causal, src_key_padding_mask=~mask)
             lengths = mask.long().sum(dim=1).clamp(min=1)
             idx = (lengths - 1).unsqueeze(-1).unsqueeze(-1).expand(-1, 1, self.d_model)
-            h_t = encoded.gather(1, idx).squeeze(1)
-            h_t = torch.nan_to_num(h_t, nan=0.0)
-            return h_t
+            return torch.nan_to_num(encoded.gather(1, idx).squeeze(1), nan=0.0)
 
         def forward(self, cats, nums, actions, mask) -> Dict[str, Any]:
             h_t = self.encode(cats, nums, actions, mask)
-            outcome_logits = self.outcome_head(h_t).view(
-                -1, self.n_actions, self.n_outcomes
-            )
-            q_values = self._q_values(h_t)
-            bc_logits = self.bc_head(h_t)
             return {
-                "h": h_t,
-                "outcome_logits": outcome_logits,
-                "q_values": q_values,
-                "bc_logits": bc_logits,
+                "q_values": self._q_values(h_t),
+                "bc_logits": self.bc_head(h_t),
             }
 
     StepEmbedding = _StepEmbedding
     CausalTransformerPolicyNet = _CausalTransformerPolicyNet
 
 
-def bc_support_mask(bc_logits, threshold: float = 0.01, force_action_idx=None):
+def bc_support_mask(bc_logits, threshold: float = 0.01):
     import torch.nn.functional as F
 
     probs = F.softmax(bc_logits, dim=-1)
     support = probs >= threshold
-    argmax = probs.argmax(dim=-1)
-    support.scatter_(1, argmax.unsqueeze(-1), True)
-    if force_action_idx is not None:
-        support[:, int(force_action_idx)] = True
+    support.scatter_(1, probs.argmax(dim=-1).unsqueeze(-1), True)
     return support
 
 
@@ -589,8 +529,7 @@ def masked_argmax(scores, support):
     import torch
 
     very_neg = torch.finfo(scores.dtype).min / 4
-    masked = scores.masked_fill(~support, very_neg)
-    return masked.argmax(dim=-1)
+    return scores.masked_fill(~support, very_neg).argmax(dim=-1)
 
 
 def _warn_fallback_once(reason: str) -> None:
@@ -614,12 +553,11 @@ def _load_bundle() -> Optional[Dict[str, Any]]:
         import torch
 
         _ensure_module_bases()
-        path = _MODEL_PATH
-        if not path.exists():
-            _warn_fallback_once(f"missing checkpoint {path.name}")
+        if not _MODEL_PATH.exists():
+            _warn_fallback_once(f"missing checkpoint {_MODEL_PATH.name}")
             MODEL_LOADED = False
             return None
-        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        ckpt = torch.load(_MODEL_PATH, map_location="cpu", weights_only=False)
         schema = FeatureSchema.from_dict(ckpt["schema"])
         cfg = ckpt["config"]
         model = CausalTransformerPolicyNet(
@@ -637,7 +575,6 @@ def _load_bundle() -> Optional[Dict[str, Any]]:
             "model": model,
             "schema": schema,
             "bc_threshold": float(cfg.get("bc_threshold", 0.01)),
-            "action_conditioned_q": bool(cfg.get("action_conditioned_q", False)),
         }
         MODEL_LOADED = True
         return _bundle
@@ -653,19 +590,13 @@ def _model_act(
 ) -> str:
     import torch
 
-    if _is_ood_observation(observation, bundle["schema"]):
-        return _safe_product_rule(observation, history)
     steps, valid = build_sequence(observation, history, bundle["schema"])
     batch = collate_sequences([(steps, valid)])
-    model = bundle["model"]
     with torch.no_grad():
-        out = model(batch["cats"], batch["nums"], batch["actions"], batch["mask"])
-    force = ACTIONS.index("PARK_THREAD") if should_park(observation) else None
-    support = bc_support_mask(
-        out["bc_logits"],
-        threshold=bundle["bc_threshold"],
-        force_action_idx=force,
-    )
+        out = bundle["model"](
+            batch["cats"], batch["nums"], batch["actions"], batch["mask"]
+        )
+    support = bc_support_mask(out["bc_logits"], threshold=bundle["bc_threshold"])
     idx = int(masked_argmax(out["q_values"], support)[0].item())
     return ACTIONS[idx]
 
@@ -689,9 +620,8 @@ def act(observation: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
         obs = dict(observation)
         hist: List[Dict[str, Any]] = list(history) if history else []
 
-        hard = hard_safety_action(obs)
-        if hard is not None:
-            return hard
+        if should_escalate(obs):
+            return "ESCALATE_TO_HUMAN"
 
         bundle = _load_bundle()
         if bundle is None:
