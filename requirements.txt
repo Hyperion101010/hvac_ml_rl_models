@@ -1,4 +1,4 @@
 # Rule / eval path: Python standard library only.
-# Learned transformer policy (torch wheels need numpy 1.x):
+# Learned transformer policy:
 torch>=2.0.0,<2.3
 numpy>=1.24,<2
