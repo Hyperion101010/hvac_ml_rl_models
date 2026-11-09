@@ -220,6 +220,7 @@ def save_checkpoint(
             "bc_threshold": bc_thresh,
             "lambda_q": lam,
             "reward_scale": reward_scale,
+            "action_conditioned_q": bool(getattr(args, "action_conditioned_q", False)),
             "actions": list(ACTIONS),
             "outcome_classes": list(OUTCOME_CLASSES),
         },
@@ -262,8 +263,13 @@ def train(args: argparse.Namespace) -> None:
     else:
         print(f"warning: valid logs not found at {valid_path}; skipping validation")
 
+    acq = bool(args.action_conditioned_q)
     model = CausalTransformerPolicyNet(
-        schema, d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers
+        schema,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        action_conditioned_q=acq,
     ).to(device)
     target = copy.deepcopy(model).to(device)
     target.eval()
@@ -274,7 +280,10 @@ def train(args: argparse.Namespace) -> None:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = out_dir / "transformer_fqi.pt"
+    ckpt_name = "transformer_fqi_acq.pt" if acq else "transformer_fqi.pt"
+    ckpt_path = out_dir / ckpt_name
+    if acq:
+        print(f"action-conditioned Q enabled; checkpoint -> {ckpt_path}")
 
     gamma = args.gamma
     lam = args.lambda_q
@@ -385,6 +394,11 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Divide rewards for Q regression targets (act ranks by raw Q)",
     )
     p.add_argument("--bc-threshold", type=float, default=0.05)
+    p.add_argument(
+        "--action-conditioned-q",
+        action="store_true",
+        help="Score Q via MLP([h; a_emb]) per action; saves models/transformer_fqi_acq.pt",
+    )
     p.add_argument("--tau", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--limit-rows", type=int, default=0, help="0 = all rows")

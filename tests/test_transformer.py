@@ -57,6 +57,18 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(tuple(out["q_values"].shape), (1, 8))
         self.assertEqual(tuple(out["bc_logits"].shape), (1, 8))
 
+    def test_action_conditioned_q_shapes(self):
+        schema = FeatureSchema()
+        model = CausalTransformerPolicyNet(
+            schema, d_model=64, n_heads=4, n_layers=2, action_conditioned_q=True
+        )
+        self.assertTrue(model.action_conditioned_q)
+        steps, valid = build_sequence(_obs(), [])
+        batch = collate_sequences([(steps, valid)])
+        out = model(batch["cats"], batch["nums"], batch["actions"], batch["mask"])
+        self.assertEqual(tuple(out["q_values"].shape), (1, 8))
+        self.assertEqual(tuple(out["bc_logits"].shape), (1, 8))
+
     def test_bc_support_and_argmax(self):
         logits = torch.tensor([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         support = bc_support_mask(logits, threshold=0.05)

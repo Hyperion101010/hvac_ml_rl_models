@@ -14,6 +14,14 @@ Train the causal transformer FQI policy:
 
     python -m train.train_transformer_fqi
 
+Action-conditioned Q ablation (saves models/transformer_fqi_acq.pt):
+
+    python -m train.train_transformer_fqi --action-conditioned-q
+
+Advantage-weighted BC (saves models/transformer_awbc.pt):
+
+    python -m train.train_transformer_awbc
+
 Smoke-test ML policy (after training):
 
     python starter/check_policy.py --policy policies/default_ml_policy.py
@@ -21,7 +29,7 @@ Smoke-test ML policy (after training):
 Compare:
 
     python -m eval.compare_policies \\
-      --policies product_rule,simple_rule,transformer_bc,transformer_fqi
+      --policies product_rule,simple_rule,transformer_bc,transformer_awbc,transformer_fqi,transformer_fqi_acq
 """
 
 from policies.base import ACTIONS, ACTIONS_SET, PolicyFn
