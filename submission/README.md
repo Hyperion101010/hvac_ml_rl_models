@@ -5,8 +5,10 @@ This folder contains a next-action policy for post-visit HVAC follow-ups.
 
 ## What the policy does
 
-1. Hard safety rule: if `customer_signal` is `unhappy` or `service_risk_score` is above 0.75,
-   return `ESCALATE_TO_HUMAN`.
+1. Hard rules, checked in this order before any model runs:
+   - if `customer_signal` is `unhappy` or `service_risk_score` is above 0.75, return
+     `ESCALATE_TO_HUMAN`;
+   - otherwise, if `ignored_count` is 2 or more, return `PARK_THREAD`.
 2. Otherwise a learned policy chooses the action. A causal transformer reads the episode so far
    and predicts, for each action, the expected discounted return (Q value). A second head
    predicts how likely the old logged policy was to take each action; actions below a
@@ -14,7 +16,9 @@ This folder contains a next-action policy for post-visit HVAC follow-ups.
    rely on values the logs cannot support. The action with the highest Q among the remaining
    ones is returned.
 3. If the model cannot be used for any reason (missing file, torch import failure, shape error),
-   `policy.py` falls back to a hand-written rule policy (`product_rule`) and emits one warning.
+   or if a categorical field in the observation has a value the model never saw in training,
+   `policy.py` falls back to a hand-written rule policy (`product_rule`). A model-load or
+   inference failure also emits one warning.
    `MODEL_LOADED` in `policy.py` tells you which path is active.
 
 No network access or paid API is needed at run time.

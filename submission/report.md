@@ -2,9 +2,10 @@
 
 ## Summary
 
-The submitted policy applies a hard escalation rule first, then a learned value policy
+The submitted policy applies two hard rules first (escalate unhappy or high-risk customers; park
+a thread after two or more ignored touches), then a learned value policy
 (`transformer_fqi_acq`) restricted to actions the logged policy plausibly took, with a rule
-policy (`product_rule`) as a fallback if the model cannot run.
+policy (`product_rule`) as a fallback if the model cannot run or an input category is unseen.
 
 On 5,000 validation episodes, using off-policy estimates, the learned policies score higher
 than the best hand-written rule policy (`product_rule`) in two estimators: weighted importance
@@ -20,9 +21,11 @@ multi-step one, so multi-step value is not demonstrated.
 
 ## 1. When each action is used
 
-The escalation rule is fixed: an unhappy customer, or a service-risk score above 0.75, always
-goes to a human. For the other seven actions the policy is learned, so the table gives the product
-meaning of each action, what the logs say about it, and how often the submitted policy uses it.
+Two rules are fixed and run before the model: an unhappy customer, or a service-risk score above
+0.75, always goes to a human; otherwise a thread with two or more ignored touches is always
+parked. Everything else is chosen by the learned policy. The table gives the product meaning of
+each action, what the logs say about it, and how often the submitted policy uses it (the
+ESCALATE and PARK shares include the cases forced by the two rules).
 
 | Action | Product meaning | What the logs show (old policy, training data) | Share used by submitted policy on validation |
 | --- | --- | --- | --- |
@@ -41,8 +44,9 @@ Plain-language reading of the learned part (shares on validation steps matching 
   moves toward booking instead of asking another objection question.
 - Relationship-type customers (high relationship score, no estimate): mostly `WAIT` (71.4%) or
   `PARK_THREAD` (18.4%); sales actions and `CHECK_IN` are essentially unused.
-- Customers who have ignored two or more touches: almost always `PARK_THREAD` (98.8%); the
-  remainder are escalations under the hard risk/unhappy rule.
+- Customers who have ignored two or more touches: `PARK_THREAD` (98.8%); the remainder are
+  escalations. This is the hard park rule at work, not a learned behavior, so this slice says
+  nothing about what the model itself would choose.
 - Expiring or lapsed memberships (excluding unhappy/risky and already-ignored cases): mostly
   `WAIT` (69.7%); `MEMBERSHIP_TOUCH` is only 8.2%, so the learned policy does not push renewal
   as aggressively as the hand-written rule would.
@@ -84,7 +88,10 @@ logs and the logged action probabilities.
 - DR: combines the weights with a value model (FQE) trained on the training logs only, so it is
   independent of the validation episodes and of the policy being scored. The FQE checkpoint
   (`models/transformer_fqe.pt`) is behavior FQE: it bootstraps the *logged* next action
-  (SARSA-style Q for the behavior policy μ), not the candidate policy's own Q.
+  (SARSA-style Q for the behavior policy μ), not the candidate policy's own Q. As an
+  interpretation (not separately tested): the direct term of DR then values a candidate as "take
+  its action now, then behave like the old policy", which tends to understate gains that build up
+  over several steps. This is one plausible reason DR is lower than WIS for the learned policies.
 - Confidence intervals come from bootstrapping episodes: 200 resamples, percentile interval with
   `alpha=0.05` (95% CI) in `bootstrap_ci`.
 - `dWIS` is the plain difference between a policy's WIS and `product_rule`'s WIS. It is not a
@@ -232,8 +239,13 @@ are visible but can be wrong; the policy treats them as evidence, not truth.
 
 1. Extrapolation to rarely tried actions. The value head can be wrong where the old policy
    seldom acted, and the held-out simulator may reward actions the logs say little about. The
-   support filter (threshold 0.01) reduces but does not remove this. Sign to watch: the action
-   mix moving far from the logged mix, or sales actions on customers with weak positive signals.
+   support filter (threshold 0.01) reduces but does not remove this. A visible symptom is
+   passivity: on validation steps the policy chooses `WAIT` 47.3% and `PARK_THREAD` 16.8% of the
+   time (the logged policy: 6.9% and 1.7%) and never chooses `CHECK_IN`. In the logs these
+   choices score well because waiting or parking avoids opt-outs, but if the real environment
+   penalizes inactivity, or a parked thread loses value beyond the 4-step horizon, the policy
+   would underperform. Signs to watch: the action mix moving far from the logged mix, rising
+   `WAIT`/`PARK_THREAD` shares, or sales actions on customers with weak positive signals.
 2. Noisy score fields leading to the wrong tone. If the relationship or risk scores are
    misestimated, the policy can push sales at relationship customers (opt-outs rise with
    sales actions: 5.6% at turn 0 to 14.8% at turn 3 in the logs, and 13.1% versus 7.5% for
@@ -302,3 +314,8 @@ Safer alternatives to exploring on real customers:
   (smoothing 0.9, clip 5 and 20, slices hidden when ESS is below 30). Numbers in section 3 are
   from that run and were not regenerated while packaging.
 - Training command and checkpoint hash: see `README.md`.
+- [CONFIRM BEFORE SUBMITTING, then delete this line: the tables in section 3 were produced with
+  the policy code that includes the two hard rules and with the shipped checkpoint
+  (sha256 in README.md). If they were produced with an earlier checkpoint, rerun
+  `python3 -m eval.run_ope --q-ckpt models/transformer_fqe.pt --policies product_rule,transformer_fqi_acq`
+  and update the rows for these two policies.]
