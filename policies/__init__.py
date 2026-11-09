@@ -26,9 +26,14 @@ Smoke-test ML policy (after training):
 
     python starter/check_policy.py --policy policies/default_ml_policy.py
 
-Compare:
+Compare (agreement / matched reward):
 
     python -m eval.compare_policies \\
+      --policies product_rule,simple_rule,transformer_bc,transformer_awbc,transformer_fqi,transformer_fqi_acq
+
+Off-policy value estimates (WIS / SNIPS / DR):
+
+    python -m eval.run_ope \\
       --policies product_rule,simple_rule,transformer_bc,transformer_awbc,transformer_fqi,transformer_fqi_acq
 """
 
