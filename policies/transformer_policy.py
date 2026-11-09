@@ -13,7 +13,6 @@ from policies.transformer_model import (
     RISK_ESCALATE,
     CausalTransformerPolicyNet,
     bc_support_mask,
-    factored_scores,
     masked_argmax,
     should_escalate,
 )
@@ -84,21 +83,10 @@ def transformer_fqi_act(
 ) -> str:
     if should_escalate(observation):
         return "ESCALATE_TO_HUMAN"
-    torch = _torch()
     bundle = load_bundle()
     out = _forward(observation, history, bundle)
-    unhappy = torch.tensor(
-        [observation.get("customer_signal") == "unhappy"], dtype=torch.bool
-    )
-    scores = factored_scores(
-        out["outcome_logits"],
-        out["q_values"],
-        bundle["outcome_values"],
-        unhappy,
-        reward_scale=bundle.get("reward_scale", 1.0),
-    )
     support = bc_support_mask(out["bc_logits"], threshold=bundle["bc_threshold"])
-    idx = int(masked_argmax(scores, support)[0].item())
+    idx = int(masked_argmax(out["q_values"], support)[0].item())
     return ACTIONS[idx]
 
 

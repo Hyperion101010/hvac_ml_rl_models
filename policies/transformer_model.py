@@ -1,8 +1,10 @@
-"""Causal Transformer encoder with outcome, Q, and BC heads."""
+"""Causal Transformer encoder with outcome, Q, and BC heads.
+
+Act/train use Q + BC only; outcome head is kept for checkpoint compatibility.
+"""
 
 from __future__ import annotations
 
-import math
 from typing import Dict
 
 import torch
@@ -11,7 +13,7 @@ import torch.nn.functional as F
 
 from policies.base import ACTIONS
 from policies.features import CAT_FIELDS, FeatureSchema, MAX_LEN, NUM_FIELDS
-from policies.outcome_values import CONTINUE_IDX, OUTCOME_CLASSES, OutcomeValues
+from policies.outcome_values import OUTCOME_CLASSES
 
 
 class StepEmbedding(nn.Module):
@@ -138,25 +140,6 @@ def bc_support_mask(bc_logits: torch.Tensor, threshold: float = 0.05) -> torch.T
     argmax = probs.argmax(dim=-1)
     support.scatter_(1, argmax.unsqueeze(-1), True)
     return support
-
-
-def factored_scores(
-    outcome_logits: torch.Tensor,
-    q_values: torch.Tensor,
-    outcome_values: OutcomeValues,
-    unhappy: torch.Tensor,
-    reward_scale: float = 1.0,
-) -> torch.Tensor:
-    """score[a] = V_imm[a] + P(continue|a) * (Q[a] * reward_scale).
-
-    V_imm uses raw outcome values; Q is trained in reward/reward_scale units.
-    """
-    probs = F.softmax(outcome_logits, dim=-1)  # [B, A, C]
-    table = outcome_values.tensor_table(unhappy).to(probs.device)  # [B, C]
-    # zero continue/max_steps already; V_imm = sum_c P * v
-    v_imm = (probs * table.unsqueeze(1)).sum(dim=-1)  # [B, A]
-    p_continue = probs[..., CONTINUE_IDX]
-    return v_imm + p_continue * (q_values * float(reward_scale))
 
 
 def masked_argmax(scores: torch.Tensor, support: torch.Tensor) -> torch.Tensor:

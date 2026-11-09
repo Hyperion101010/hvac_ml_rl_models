@@ -1,4 +1,4 @@
-"""Train causal transformer with outcome CE + BC CE + conservative FQI."""
+"""Train causal transformer with BC CE + conservative FQI (Q-only act)."""
 
 from __future__ import annotations
 
@@ -140,18 +140,15 @@ def compute_batch_losses(
     gamma: float,
     reward_scale: float,
     bc_thresh: float,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     cur = {k: v.to(device) for k, v in batch["cur"].items()}
     nxt = {k: v.to(device) for k, v in batch["next"].items()}
     action_idx = batch["action_idx"].to(device)
-    outcome_idx = batch["outcome_idx"].to(device)
     reward = batch["reward"].to(device)
     done = batch["done"].to(device)
     has_next = batch["has_next"].to(device)
 
     out = model(cur["cats"], cur["nums"], cur["actions"], cur["mask"])
-    logits_a = out["outcome_logits"][torch.arange(len(action_idx), device=device), action_idx]
-    loss_out = F.cross_entropy(logits_a, outcome_idx)
     loss_bc = F.cross_entropy(out["bc_logits"], action_idx)
 
     with torch.no_grad():
@@ -166,7 +163,7 @@ def compute_batch_losses(
 
     q_pred = out["q_values"][torch.arange(len(action_idx), device=device), action_idx]
     loss_q = F.smooth_l1_loss(q_pred, y)
-    return loss_out, loss_bc, loss_q
+    return loss_bc, loss_q
 
 
 def evaluate_loader(
@@ -180,23 +177,21 @@ def evaluate_loader(
     lam: float,
 ) -> Dict[str, float]:
     model.eval()
-    total = total_out = total_bc = total_q = 0.0
+    total = total_bc = total_q = 0.0
     n_batches = 0
     with torch.no_grad():
         for batch in loader:
-            loss_out, loss_bc, loss_q = compute_batch_losses(
+            loss_bc, loss_q = compute_batch_losses(
                 model, target, batch, device, gamma, reward_scale, bc_thresh
             )
-            loss = loss_out + loss_bc + lam * loss_q
+            loss = loss_bc + lam * loss_q
             total += float(loss.item())
-            total_out += float(loss_out.item())
             total_bc += float(loss_bc.item())
             total_q += float(loss_q.item())
             n_batches += 1
     denom = max(n_batches, 1)
     return {
         "loss": total / denom,
-        "out": total_out / denom,
         "bc": total_bc / denom,
         "q": total_q / denom,
     }
@@ -293,13 +288,13 @@ def train(args: argparse.Namespace) -> None:
 
     for epoch in range(1, args.epochs + 1):
         model.train()
-        total = total_out = total_bc = total_q = 0.0
+        total = total_bc = total_q = 0.0
         n_batches = 0
         for batch in loader:
-            loss_out, loss_bc, loss_q = compute_batch_losses(
+            loss_bc, loss_q = compute_batch_losses(
                 model, target, batch, device, gamma, reward_scale, bc_thresh
             )
-            loss = loss_out + loss_bc + lam * loss_q
+            loss = loss_bc + lam * loss_q
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -307,7 +302,6 @@ def train(args: argparse.Namespace) -> None:
             soft_update(target, model, tau=args.tau)
 
             total += float(loss.item())
-            total_out += float(loss_out.item())
             total_bc += float(loss_bc.item())
             total_q += float(loss_q.item())
             n_batches += 1
@@ -316,7 +310,6 @@ def train(args: argparse.Namespace) -> None:
         print(
             f"epoch {epoch}/{args.epochs} "
             f"train_loss={total/denom:.4f} "
-            f"out={total_out/denom:.4f} "
             f"bc={total_bc/denom:.4f} "
             f"q={total_q/denom:.4f}"
         )
@@ -328,7 +321,6 @@ def train(args: argparse.Namespace) -> None:
             print(
                 f"epoch {epoch}/{args.epochs} "
                 f"valid_loss={metrics['loss']:.4f} "
-                f"out={metrics['out']:.4f} "
                 f"bc={metrics['bc']:.4f} "
                 f"q={metrics['q']:.4f}"
             )
@@ -390,7 +382,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--reward-scale",
         type=float,
         default=100.0,
-        help="Divide rewards for Q targets; act uses Q * reward_scale",
+        help="Divide rewards for Q regression targets (act ranks by raw Q)",
     )
     p.add_argument("--bc-threshold", type=float, default=0.05)
     p.add_argument("--tau", type=float, default=0.05)
