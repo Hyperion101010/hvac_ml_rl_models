@@ -14,14 +14,31 @@ Train the causal transformer FQI policy:
 
     python -m train.train_transformer_fqi
 
+Action-conditioned Q ablation (saves models/transformer_fqi_acq.pt):
+
+    python -m train.train_transformer_fqi --action-conditioned-q
+
+Advantage-weighted BC (saves models/transformer_awbc.pt):
+
+    python -m train.train_transformer_awbc
+
 Smoke-test ML policy (after training):
 
     python starter/check_policy.py --policy policies/default_ml_policy.py
 
-Compare:
+Compare (agreement / matched reward):
 
     python -m eval.compare_policies \\
-      --policies product_rule,simple_rule,transformer_bc,transformer_fqi
+      --policies product_rule,simple_rule,transformer_bc,transformer_awbc,transformer_fqi,transformer_fqi_acq
+
+Off-policy value estimates (WIS / SNIPS / DR):
+
+    python -m eval.run_ope
+
+Independent FQE for DR (+ optional one-step greedy):
+
+    python -m train.train_fqe --epochs 15
+    python -m train.train_fqe --gamma 0 --out-name transformer_one_step.pt --epochs 10
 """
 
 from policies.base import ACTIONS, ACTIONS_SET, PolicyFn
@@ -31,9 +48,11 @@ from policies.rules import product_rule
 
 try:
     from policies import transformer_policy as _transformer_policy  # noqa: F401
+    from policies import greedy as _greedy  # noqa: F401
 except ImportError:
     # Torch not installed; rule policies still work.
     _transformer_policy = None  # type: ignore
+    _greedy = None  # type: ignore
 
 __all__ = [
     "ACTIONS",
