@@ -33,8 +33,12 @@ Compare (agreement / matched reward):
 
 Off-policy value estimates (WIS / SNIPS / DR):
 
-    python -m eval.run_ope \\
-      --policies product_rule,simple_rule,transformer_bc,transformer_awbc,transformer_fqi,transformer_fqi_acq
+    python -m eval.run_ope
+
+Independent FQE for DR (+ optional one-step greedy):
+
+    python -m train.train_fqe --epochs 15
+    python -m train.train_fqe --gamma 0 --out-name transformer_one_step.pt --epochs 10
 """
 
 from policies.base import ACTIONS, ACTIONS_SET, PolicyFn
@@ -44,9 +48,11 @@ from policies.rules import product_rule
 
 try:
     from policies import transformer_policy as _transformer_policy  # noqa: F401
+    from policies import greedy as _greedy  # noqa: F401
 except ImportError:
     # Torch not installed; rule policies still work.
     _transformer_policy = None  # type: ignore
+    _greedy = None  # type: ignore
 
 __all__ = [
     "ACTIONS",

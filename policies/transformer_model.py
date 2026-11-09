@@ -5,7 +5,7 @@ Act/train use Q + BC only; outcome head is kept for checkpoint compatibility.
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 from torch import nn
@@ -224,12 +224,18 @@ class CausalTransformerAWBCNet(nn.Module):
         }
 
 
-def bc_support_mask(bc_logits: torch.Tensor, threshold: float = 0.05) -> torch.Tensor:
+def bc_support_mask(
+    bc_logits: torch.Tensor,
+    threshold: float = 0.01,
+    force_action_idx: Optional[int] = None,
+) -> torch.Tensor:
     probs = F.softmax(bc_logits, dim=-1)
     support = probs >= threshold
     # ensure at least argmax
     argmax = probs.argmax(dim=-1)
     support.scatter_(1, argmax.unsqueeze(-1), True)
+    if force_action_idx is not None:
+        support[:, int(force_action_idx)] = True
     return support
 
 

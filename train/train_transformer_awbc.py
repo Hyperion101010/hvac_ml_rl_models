@@ -174,6 +174,11 @@ def save_checkpoint(
             "w_max": args.w_max,
             "lambda_v": args.lambda_v,
             "reward_scale": args.reward_scale,
+            "lr": float(args.lr),
+            "batch_size": int(args.batch_size),
+            "epochs_planned": int(args.epochs),
+            "epoch": int(getattr(args, "_saved_epoch", args.epochs)),
+            "seed": int(args.seed),
             "actions": list(ACTIONS),
         },
     }
@@ -304,14 +309,19 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--train-logs", default=str(ROOT / "data" / "train_logs.jsonl"))
     p.add_argument("--valid-logs", default=str(ROOT / "data" / "valid_logs.jsonl"))
     p.add_argument("--out-dir", default=str(ROOT / "models"))
-    p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--epochs", type=int, default=25)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--d-model", type=int, default=128)
     p.add_argument("--n-heads", type=int, default=4)
     p.add_argument("--n-layers", type=int, default=2)
     p.add_argument("--gamma", type=float, default=0.95)
-    p.add_argument("--beta", type=float, default=1.0, help="Advantage temperature")
+    p.add_argument(
+        "--beta",
+        type=float,
+        default=0.2,
+        help="Advantage temperature (lower => sharper reward weighting)",
+    )
     p.add_argument("--w-max", type=float, default=20.0, help="Max advantage weight")
     p.add_argument("--lambda-v", type=float, default=1.0)
     p.add_argument("--reward-scale", type=float, default=100.0)

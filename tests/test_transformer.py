@@ -9,11 +9,11 @@ import torch
 
 from policies.base import ACTIONS
 from policies.features import FeatureSchema, build_sequence, collate_sequences
+from policies.safety import hard_safety_action, should_escalate, should_park
 from policies.transformer_model import (
     CausalTransformerPolicyNet,
     bc_support_mask,
     masked_argmax,
-    should_escalate,
 )
 from policies.transformer_policy import transformer_fqi_act, transformer_bc_act, load_bundle
 
@@ -81,6 +81,18 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(should_escalate(_obs(customer_signal="unhappy")))
         self.assertTrue(should_escalate(_obs(service_risk_score=0.9)))
         self.assertFalse(should_escalate(_obs(ignored_count=2, service_risk_score=0.1)))
+        self.assertTrue(should_park(_obs(ignored_count=2)))
+        self.assertEqual(hard_safety_action(_obs(ignored_count=2)), "PARK_THREAD")
+        self.assertEqual(
+            hard_safety_action(_obs(customer_signal="unhappy", ignored_count=2)),
+            "ESCALATE_TO_HUMAN",
+        )
+
+    def test_bc_support_force_park(self):
+        logits = torch.full((1, 8), -5.0)
+        logits[0, 0] = 5.0
+        support = bc_support_mask(logits, threshold=0.01, force_action_idx=6)
+        self.assertTrue(bool(support[0, 6].item()))
 
 
 @unittest.skipUnless(

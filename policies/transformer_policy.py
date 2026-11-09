@@ -1,4 +1,4 @@
-"""Pluggable act() for transformer FQI / BC — signature fixed."""
+"""Pluggable act() for transformer FQI / BC / AWBC — signature fixed."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from policies.base import ACTIONS
 from policies.features import FeatureSchema, build_sequence, collate_sequences
 from policies.outcome_values import OutcomeValues
 from policies.registry import register
-from policies.safety import RISK_ESCALATE, should_escalate
+from policies.safety import RISK_ESCALATE, hard_safety_action, should_park
 from policies.transformer_model import (
     CausalTransformerAWBCNet,
     CausalTransformerPolicyNet,
@@ -21,6 +21,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_CKPT = _ROOT / "models" / "transformer_fqi.pt"
 _ACQ_CKPT = _ROOT / "models" / "transformer_fqi_acq.pt"
 _AWBC_CKPT = _ROOT / "models" / "transformer_awbc.pt"
+_PARK_IDX = ACTIONS.index("PARK_THREAD")
 
 _bundles: Dict[str, Dict[str, Any]] = {}
 
@@ -29,6 +30,29 @@ def _torch():
     import torch
 
     return torch
+
+
+def _product_rule_fallback(
+    observation: Dict[str, Any], history: List[Dict[str, Any]]
+) -> str:
+    from policies.rules import product_rule
+
+    return product_rule(observation, history)
+
+
+def _is_ood_observation(observation: Dict[str, Any], schema: FeatureSchema) -> bool:
+    """True if a categorical field is outside the training vocab (maps to id 0 unk)."""
+    from policies.features import CAT_FIELDS
+
+    for f in CAT_FIELDS:
+        raw = observation.get(f)
+        if raw is None:
+            continue
+        key = str(raw)
+        table = schema.cat_to_id.get(f, {})
+        if key not in table:
+            return True
+    return False
 
 
 def load_bundle(ckpt_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -66,6 +90,7 @@ def load_bundle(ckpt_path: Optional[Path] = None) -> Dict[str, Any]:
             "device": torch.device("cpu"),
         }
     else:
+        # fqi / fqe / one_step share CausalTransformerPolicyNet
         model = CausalTransformerPolicyNet(
             schema,
             d_model=cfg.get("d_model", 128),
@@ -75,20 +100,30 @@ def load_bundle(ckpt_path: Optional[Path] = None) -> Dict[str, Any]:
         )
         model.load_state_dict(ckpt["model"])
         model.eval()
-        outcome_values = OutcomeValues.from_dict(ckpt["outcome_values"])
+        ov_raw = ckpt.get("outcome_values")
+        outcome_values = (
+            OutcomeValues.from_dict(ov_raw) if ov_raw is not None else None
+        )
         bundle = {
             "path": key,
-            "kind": "fqi",
+            "kind": kind if kind in ("fqi", "fqe") else "fqi",
             "model": model,
             "schema": schema,
             "outcome_values": outcome_values,
-            "bc_threshold": float(cfg.get("bc_threshold", 0.05)),
+            "bc_threshold": float(cfg.get("bc_threshold", 0.01)),
             "reward_scale": float(cfg.get("reward_scale", 1.0)),
             "action_conditioned_q": bool(cfg.get("action_conditioned_q", False)),
             "device": torch.device("cpu"),
         }
     _bundles[key] = bundle
     return bundle
+
+
+def _try_load(ckpt_path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return load_bundle(ckpt_path)
+    except Exception:
+        return None
 
 
 def _forward(observation: Dict[str, Any], history: List[Dict[str, Any]], bundle: Dict[str, Any]):
@@ -108,10 +143,18 @@ def _forward(observation: Dict[str, Any], history: List[Dict[str, Any]], bundle:
 def _fqi_act_from_bundle(
     observation: Dict[str, Any], history: List[Dict[str, Any]], bundle: Dict[str, Any]
 ) -> str:
-    if should_escalate(observation):
-        return "ESCALATE_TO_HUMAN"
+    hard = hard_safety_action(observation)
+    if hard is not None:
+        return hard
+    if _is_ood_observation(observation, bundle["schema"]):
+        return _product_rule_fallback(observation, history)
     out = _forward(observation, history, bundle)
-    support = bc_support_mask(out["bc_logits"], threshold=bundle["bc_threshold"])
+    force = _PARK_IDX if should_park(observation) else None
+    support = bc_support_mask(
+        out["bc_logits"],
+        threshold=bundle["bc_threshold"],
+        force_action_idx=force,
+    )
     idx = int(masked_argmax(out["q_values"], support)[0].item())
     return ACTIONS[idx]
 
@@ -119,21 +162,33 @@ def _fqi_act_from_bundle(
 def transformer_fqi_act(
     observation: Dict[str, Any], history: List[Dict[str, Any]]
 ) -> str:
-    return _fqi_act_from_bundle(observation, history, load_bundle(_DEFAULT_CKPT))
+    bundle = _try_load(_DEFAULT_CKPT)
+    if bundle is None:
+        return _product_rule_fallback(observation, history)
+    return _fqi_act_from_bundle(observation, history, bundle)
 
 
 def transformer_fqi_acq_act(
     observation: Dict[str, Any], history: List[Dict[str, Any]]
 ) -> str:
-    return _fqi_act_from_bundle(observation, history, load_bundle(_ACQ_CKPT))
+    bundle = _try_load(_ACQ_CKPT)
+    if bundle is None:
+        return _product_rule_fallback(observation, history)
+    return _fqi_act_from_bundle(observation, history, bundle)
 
 
 def transformer_bc_act(
     observation: Dict[str, Any], history: List[Dict[str, Any]]
 ) -> str:
-    if should_escalate(observation):
-        return "ESCALATE_TO_HUMAN"
-    out = _forward(observation, history, load_bundle(_DEFAULT_CKPT))
+    hard = hard_safety_action(observation)
+    if hard is not None:
+        return hard
+    bundle = _try_load(_DEFAULT_CKPT)
+    if bundle is None:
+        return _product_rule_fallback(observation, history)
+    if _is_ood_observation(observation, bundle["schema"]):
+        return _product_rule_fallback(observation, history)
+    out = _forward(observation, history, bundle)
     idx = int(out["bc_logits"][0].argmax().item())
     return ACTIONS[idx]
 
@@ -141,9 +196,15 @@ def transformer_bc_act(
 def transformer_awbc_act(
     observation: Dict[str, Any], history: List[Dict[str, Any]]
 ) -> str:
-    if should_escalate(observation):
-        return "ESCALATE_TO_HUMAN"
-    out = _forward(observation, history, load_bundle(_AWBC_CKPT))
+    hard = hard_safety_action(observation)
+    if hard is not None:
+        return hard
+    bundle = _try_load(_AWBC_CKPT)
+    if bundle is None:
+        return _product_rule_fallback(observation, history)
+    if _is_ood_observation(observation, bundle["schema"]):
+        return _product_rule_fallback(observation, history)
+    out = _forward(observation, history, bundle)
     idx = int(out["pi_logits"][0].argmax().item())
     return ACTIONS[idx]
 
@@ -168,5 +229,4 @@ def transformer_awbc(observation: Dict[str, Any], history: List[Dict[str, Any]])
     return transformer_awbc_act(observation, history)
 
 
-# Silence unused import warning for RISK_ESCALATE documentation linkage
 _ = RISK_ESCALATE
